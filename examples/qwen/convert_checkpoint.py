@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import tensorrt_llm
 from tensorrt_llm._utils import release_gc
 from tensorrt_llm.mapping import Mapping
-from tensorrt_llm.models import QWenForCausalLM
+from tensorrt_llm.models import QWenForCausalLM, QWenForSequenceClassification
 from tensorrt_llm.models.modeling_utils import QuantConfig
 from tensorrt_llm.models.qwen.convert import load_hf_qwen
 from tensorrt_llm.quantization import QuantAlgo
@@ -153,6 +153,13 @@ def parse_arguments():
         help=
         'N-way expert parallelism size for MOE, default is 1, which will do tp-only for MoE'
     )
+    parser.add_argument(
+        '--seq_cls',
+        default=True,
+        action="store_false",
+        help=
+        'for sequence classification'
+    )
     args = parser.parse_args()
     return args
 
@@ -215,6 +222,13 @@ def convert_and_save_hf(args):
     use_hf_gptq_checkpoint = (args.use_weight_only
                               and args.weight_only_precision == 'int4_gptq')
     quant_config = args_to_quant_config(args)
+    
+    #adhoc fix
+    if args.seq_cls:
+        QWenForCausalLM = QWenForSequenceClassification
+    else:
+        QWenForCausalLM = QWenForCausalLM
+
 
     if args.smoothquant is not None or args.int8_kv_cache:
         mapping = Mapping(
@@ -234,7 +248,9 @@ def convert_and_save_hf(args):
     else:
         # When not loading by shard, preload one complete model and then slice per rank weights from this
         # this saves the disk reloading time
-        hf_model = load_hf_qwen(model_dir, load_model_on_cpu)
+
+
+        hf_model = load_hf_qwen(model_dir, load_model_on_cpu, args.seq_cls)
 
         def convert_and_save_rank(args, rank):
             mapping = Mapping(world_size=world_size,
@@ -243,6 +259,7 @@ def convert_and_save_hf(args):
                               pp_size=args.pp_size,
                               moe_tp_size=args.moe_tp_size,
                               moe_ep_size=args.moe_ep_size)
+            
             qwen = QWenForCausalLM.from_hugging_face(
                 model_dir if hf_model is None else hf_model,
                 args.dtype,

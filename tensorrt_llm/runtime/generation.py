@@ -3230,76 +3230,76 @@ class GenerationSession(object):
 
         should_stop = None
         logits = None
-        if self.mapping.is_last_pp_rank():
-            logits = self.buffer['logits']
-            if self.is_redrafter_mode:
-                should_stop = self.process_logits_including_draft(
-                    step, batch_size, logits, next_step_tensors)
-            elif logits is not None:
-                if self.is_medusa_mode:
-                    should_stop = self.process_logits_including_draft(
-                        step, batch_size, logits, next_step_tensors)
-                else:
-                    if logits_processor is not None:
-                        final_output_ids = self.finalize_decoder(
-                            context_lengths,
-                            batch_size,
-                            beam_width,
-                            scfg,
-                            in_progress=True)
-                        # keep the shape as same as huggingface stopping_criteria
-                        final_output_ids_ = final_output_ids.reshape(
-                            -1, final_output_ids.size(-1))
-                        logits = logits_processor(step, final_output_ids_,
-                                                  logits)
-                        self.buffer['logits'] = logits
-                    # [batch_size x beam_width, vocab_size_padded] -> [batch_size, beam_width, vocab_size_padded]
-                    next_token_logits = logits.reshape(
-                        (batch_size, beam_width,
-                         -1)).to(self.decoder_logits_dtype)
-                    decode_step = step + max_context_length
+        # if self.mapping.is_last_pp_rank():
+        #     logits = self.buffer['logits']
+        #     if self.is_redrafter_mode:
+        #         should_stop = self.process_logits_including_draft(
+        #             step, batch_size, logits, next_step_tensors)
+        #     elif logits is not None:
+        #         if self.is_medusa_mode:
+        #             should_stop = self.process_logits_including_draft(
+        #                 step, batch_size, logits, next_step_tensors)
+        #         else:
+        #             if logits_processor is not None:
+        #                 final_output_ids = self.finalize_decoder(
+        #                     context_lengths,
+        #                     batch_size,
+        #                     beam_width,
+        #                     scfg,
+        #                     in_progress=True)
+        #                 # keep the shape as same as huggingface stopping_criteria
+        #                 final_output_ids_ = final_output_ids.reshape(
+        #                     -1, final_output_ids.size(-1))
+        #                 logits = logits_processor(step, final_output_ids_,
+        #                                           logits)
+        #                 self.buffer['logits'] = logits
+        #             # [batch_size x beam_width, vocab_size_padded] -> [batch_size, beam_width, vocab_size_padded]
+        #             next_token_logits = logits.reshape(
+        #                 (batch_size, beam_width,
+        #                  -1)).to(self.decoder_logits_dtype)
+        #             decode_step = step + max_context_length
 
-                    stop_words_list_ptrs, stop_words_lens, max_stop_words_len = stop_words_data
-                    bad_words_list_ptrs, bad_words_lens, max_bad_words_len = bad_words_data
+        #             stop_words_list_ptrs, stop_words_lens, max_stop_words_len = stop_words_data
+        #             bad_words_list_ptrs, bad_words_lens, max_bad_words_len = bad_words_data
 
-                    should_stop = self.dynamic_decoder.forward(
-                        next_token_logits, decode_step, max_context_length,
-                        self.max_attention_window_size, self.sink_token_length,
-                        ite, batch_size, self.end_ids, self.embedding_bias_opt,
-                        context_lengths, sequence_limit_lengths,
-                        stop_words_list_ptrs, stop_words_lens,
-                        max_stop_words_len, bad_words_list_ptrs, bad_words_lens,
-                        max_bad_words_len, this_src_cache_indirection,
-                        self.output_ids, self.new_tokens, self.finished,
-                        self.finished, self.sequence_length_buffer,
-                        self.cum_log_probs, self.log_probs,
-                        self.log_probs_tiled, self.parent_ids,
-                        this_tgt_cache_indirection,
-                        self.beam_hyps_output_ids_cba,
-                        self.beam_hyps_seq_len_cba,
-                        self.beam_hyps_cum_log_probs_cba,
-                        self.beam_hyps_normed_scores_cba,
-                        self.beam_hyps_log_probs_cba,
-                        self.beam_hyps_min_normed_scores,
-                        self.beam_hyps_num_beams, self.beam_hyps_is_done,
-                        scfg.use_beam_hyps)
+        #             should_stop = self.dynamic_decoder.forward(
+        #                 next_token_logits, decode_step, max_context_length,
+        #                 self.max_attention_window_size, self.sink_token_length,
+        #                 ite, batch_size, self.end_ids, self.embedding_bias_opt,
+        #                 context_lengths, sequence_limit_lengths,
+        #                 stop_words_list_ptrs, stop_words_lens,
+        #                 max_stop_words_len, bad_words_list_ptrs, bad_words_lens,
+        #                 max_bad_words_len, this_src_cache_indirection,
+        #                 self.output_ids, self.new_tokens, self.finished,
+        #                 self.finished, self.sequence_length_buffer,
+        #                 self.cum_log_probs, self.log_probs,
+        #                 self.log_probs_tiled, self.parent_ids,
+        #                 this_tgt_cache_indirection,
+        #                 self.beam_hyps_output_ids_cba,
+        #                 self.beam_hyps_seq_len_cba,
+        #                 self.beam_hyps_cum_log_probs_cba,
+        #                 self.beam_hyps_normed_scores_cba,
+        #                 self.beam_hyps_log_probs_cba,
+        #                 self.beam_hyps_min_normed_scores,
+        #                 self.beam_hyps_num_beams, self.beam_hyps_is_done,
+        #                 scfg.use_beam_hyps)
 
-                    if not self.use_gpt_attention_plugin:
-                        self.reorder_kv_cache_for_beam_search(
-                            batch_size, beam_width, max_context_length, step)
+        #             if not self.use_gpt_attention_plugin:
+        #                 self.reorder_kv_cache_for_beam_search(
+        #                     batch_size, beam_width, max_context_length, step)
 
-                    if stopping_criteria is not None and not should_stop.item():
-                        final_output_ids = self.finalize_decoder(
-                            context_lengths,
-                            batch_size,
-                            beam_width,
-                            scfg,
-                            in_progress=True)
-                        # keep the shape as same as huggingface stopping_criteria
-                        final_output_ids_ = final_output_ids.reshape(
-                            -1, final_output_ids.size(-1))
-                        should_stop[0] = stopping_criteria(
-                            step, final_output_ids_, logits)
+        #             if stopping_criteria is not None and not should_stop.item():
+        #                 final_output_ids = self.finalize_decoder(
+        #                     context_lengths,
+        #                     batch_size,
+        #                     beam_width,
+        #                     scfg,
+        #                     in_progress=True)
+        #                 # keep the shape as same as huggingface stopping_criteria
+        #                 final_output_ids_ = final_output_ids.reshape(
+        #                     -1, final_output_ids.size(-1))
+        #                 should_stop[0] = stopping_criteria(
+        #                     step, final_output_ids_, logits)
 
         if self.runtime._is_profiling():
             if not context.report_to_profiler():

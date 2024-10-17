@@ -26,7 +26,7 @@ import safetensors
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification
 from transformers.pytorch_utils import Conv1D
 
 from ..._utils import pad_vocab_size, str_dtype_to_torch
@@ -678,13 +678,20 @@ def get_tllm_linear_sq_weight(vals,
     return results
 
 
-def load_hf_qwen(model_dir: str, load_model_on_cpu: bool = False):
-    from transformers import AutoModelForCausalLM
-    model = AutoModelForCausalLM.from_pretrained(
-        model_dir,
-        device_map='auto' if not load_model_on_cpu else 'cpu',
-        torch_dtype='auto',
-        trust_remote_code=True)
+def load_hf_qwen(model_dir: str, load_model_on_cpu: bool = False, seq_cls: bool = True):
+    from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
+    if not seq_cls:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_dir,
+            device_map='auto' if not load_model_on_cpu else 'cpu',
+            torch_dtype='auto',
+            trust_remote_code=True)
+    else:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_dir,
+            device_map='auto' if not load_model_on_cpu else 'cpu',
+            torch_dtype='auto',
+            trust_remote_code=True)
     return model
 
 
@@ -1084,26 +1091,36 @@ def convert_hf_qwen(hf_model,
     v = get_weight(model_params, key_list[7], dtype)
 
     if mapping.is_last_pp_rank():
-        if hf_model.config.tie_word_embeddings:
-            # lm_head.weight has the same weights as embedding
-            lm_head_weights = v
+        if 'lm_head.weight' in model_params:
+            if hf_model.config.tie_word_embeddings:
+                # lm_head.weight has the same weights as embedding
+                lm_head_weights = v
+            else:
+                lm_head_weights = get_weight(model_params, 'lm_head', dtype)
+
+            if vocab_size % mapping.tp_size != 0:
+                # padding
+                vocab_size_padded = pad_vocab_size(vocab_size, mapping.tp_size)
+                pad_width = vocab_size_padded - vocab_size
+
+                lm_head_weights = torch.from_numpy(
+                    np.pad(lm_head_weights.detach().cpu().numpy(),
+                        ((0, pad_width), (0, 0)),
+                        'constant',
+                        constant_values=0))
+            weights['lm_head.weight'] = split_matrix_tp(lm_head_weights,
+                                                        tensor_parallel,
+                                                        mapping.tp_rank,
+                                                        dim=0)
+        elif 'score.weight' in model_params:
+            score_weights = get_weight(model_params, 'score', dtype)
+            weights['lm_head.weight'] = split_matrix_tp(score_weights,
+                                                        tensor_parallel,
+                                                        mapping.tp_rank,
+                                                        dim=0)
         else:
-            lm_head_weights = get_weight(model_params, 'lm_head', dtype)
+            NotImplementedError       
 
-        if vocab_size % mapping.tp_size != 0:
-            # padding
-            vocab_size_padded = pad_vocab_size(vocab_size, mapping.tp_size)
-            pad_width = vocab_size_padded - vocab_size
-
-            lm_head_weights = torch.from_numpy(
-                np.pad(lm_head_weights.detach().cpu().numpy(),
-                       ((0, pad_width), (0, 0)),
-                       'constant',
-                       constant_values=0))
-        weights['lm_head.weight'] = split_matrix_tp(lm_head_weights,
-                                                    tensor_parallel,
-                                                    mapping.tp_rank,
-                                                    dim=0)
 
     if use_parallel_embedding:
         v = split_matrix_tp(v,
@@ -1127,7 +1144,8 @@ def convert_hf_qwen(hf_model,
 def quantize(hf_model_dir: str,
              output_dir: str,
              config: QWenConfig,
-             calib_dataset='cnn_dailymail'):
+             calib_dataset='cnn_dailymail',
+             seq_cls=True):
     '''
         Quantize the save the model as TRT-LLM checkpoint to output_dir
     '''
@@ -1145,11 +1163,18 @@ def quantize(hf_model_dir: str,
     assert hf_model_dir is not None
     ## only load and call smooth quant routine once for all ranks
     hf_config = AutoConfig.from_pretrained(hf_model_dir, trust_remote_code=True)
-    hf_model = AutoModelForCausalLM.from_pretrained(
-        hf_model_dir,
-        device_map='auto',
-        torch_dtype='auto' if not use_smooth_quant else torch.float16,
-        trust_remote_code=True).half()
+    if not seq_cls:
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            hf_model_dir,
+            device_map='auto',
+            torch_dtype='auto' if not use_smooth_quant else torch.float16,
+            trust_remote_code=True).half()
+    else:
+        hf_model = AutoModelForSequenceClassification.from_pretrained(
+            hf_model_dir,
+            device_map='auto',
+            torch_dtype='auto' if not use_smooth_quant else torch.float16,
+            trust_remote_code=True).half()        
 
     os.environ["TOKENIZERS_PARALLELISM"] = os.environ.get(
         "TOKENIZERS_PARALLELISM", "false")
@@ -1160,10 +1185,13 @@ def quantize(hf_model_dir: str,
     dataset = load_calib_dataset(calib_dataset)
 
     system_prompt = "You are a useful assistant, please directly output the corresponding summary according to the article entered by the user."
-    gen_config_path = os.path.join(hf_model_dir, 'generation_config.json')
-    with open(gen_config_path, 'r') as f:
-        gen_config = json.load(f)
-    chat_format = getattr(gen_config, 'chat_format', 'chatml')
+    if not seq_cls:
+        gen_config_path = os.path.join(hf_model_dir, 'generation_config.json')
+        with open(gen_config_path, 'r') as f:
+            gen_config = json.load(f)
+        chat_format = getattr(gen_config, 'chat_format', 'chatml')
+    else:
+        chat_format = 'raw'
     act_range = capture_activation_range(hf_model, config.qwen_type, tokenizer,
                                          dataset, system_prompt, chat_format)
     qkv_para = {}

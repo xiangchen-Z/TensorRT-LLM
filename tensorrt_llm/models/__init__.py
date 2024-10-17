@@ -45,7 +45,7 @@ from .mpt.model import MPTForCausalLM, MPTModel
 from .opt.model import OPTForCausalLM, OPTModel
 from .phi3.model import Phi3ForCausalLM, Phi3Model
 from .phi.model import PhiForCausalLM, PhiModel
-from .qwen.model import QWenForCausalLM
+from .qwen.model import QWenForCausalLM, QWenForSequenceClassification
 from .recurrentgemma.model import RecurrentGemmaForCausalLM
 from .redrafter.model import ReDrafterForCausalLM
 
@@ -87,6 +87,7 @@ __all__ = [
     'BaichuanForCausalLM',
     'QWenConfig'
     'QWenForCausalLM',
+    'QWenForSequenceClassification'
     'QWenModel',
     'EncoderModel',
     'DecoderModel',
@@ -150,6 +151,8 @@ MODEL_MAP = {
     'QWenForCausalLM': QWenForCausalLM,
     'Qwen2ForCausalLM': QWenForCausalLM,
     'Qwen2MoeForCausalLM': QWenForCausalLM,
+    'QWenForSequenceClassification': QWenForSequenceClassification,
+    'Qwen2ForSequenceClassification': QWenForSequenceClassification,
     'WhisperEncoder': WhisperEncoder,
     'EncoderModel': EncoderModel,
     'DecoderModel': DecoderModel,

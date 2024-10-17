@@ -375,3 +375,95 @@ class QWenForCausalLM(DecoderModelForCausalLM):
 
     def use_lora(self, lora_config: LoraConfig):
         use_lora(self, lora_config, self.trtllm_modules_to_hf_modules)
+
+
+
+class QWenForSequenceClassification(QWenForCausalLM):
+    def __init__(self, config: QWenConfig):
+        transformer = QWenModel(config)
+
+        if config.mapping.is_last_pp_rank():
+            lm_head = ColumnLinear(config.hidden_size,
+                                   2,  # binary cls
+                                   bias=False,
+                                   dtype=config.dtype,
+                                   tp_group=config.mapping.tp_group,
+                                   tp_size=config.mapping.tp_size,
+                                   gather_output=True)
+        else:
+            lm_head = None
+        self.quant_mode = config.quant_mode
+        self.mapping = config.mapping
+        if config.qwen_type == 'qwen':
+            self.trtllm_modules_to_hf_modules = {
+                "attn_qkv": "c_attn",
+                "attn_dense": "attn.c_proj",
+                "mlp_h_to_4h": "w2",
+                "mlp_4h_to_h": "mlp.c_proj",
+                "mlp_gate": "w1",
+            }
+        elif config.qwen_type == 'qwen2_moe':
+            self.trtllm_modules_to_hf_modules = copy.copy(
+                get_default_trtllm_modules_to_hf_modules())
+            self.trtllm_modules_to_hf_modules.update({
+                "mlp_h_to_4h":
+                "mlp.shared_expert.gate_proj",
+                "mlp_4h_to_h":
+                "mlp.shared_expert.down_proj",
+                "mlp_gate":
+                "mlp.shared_expert.up_proj",
+                "mlp_router":
+                "mlp.shared_expert_gate",
+                "moe_h_to_4h":
+                "mlp.experts.gate_proj",
+                "moe_4h_to_h":
+                "mlp.experts.down_proj",
+                "moe_gate":
+                "mlp.experts.up_proj",
+            })
+        else:
+            self.trtllm_modules_to_hf_modules = None
+        DecoderModelForCausalLM.__init__(self, config, transformer, lm_head)
+
+    @classmethod
+    def from_hugging_face(
+            cls,
+            hf_model_or_dir: Union[str, 'transformers.PreTrainedModel'],
+            dtype: str = 'auto',
+            mapping: Optional[Mapping] = None,
+            quant_config: Optional[QuantConfig] = None,
+            **kwargs):
+        ''' Create a QWenForCausalLM object from give parameters
+        '''
+        import transformers
+
+        load_model_on_cpu = kwargs.pop('load_model_on_cpu', False)
+        use_hf_gptq_checkpoint = kwargs.pop('use_hf_gptq_checkpoint', False)
+
+        assert hf_model_or_dir is not None
+        use_preloading = isinstance(hf_model_or_dir,
+                                    transformers.PreTrainedModel)
+        if use_preloading:
+            hf_model = hf_model_or_dir
+            hf_config_or_dir = hf_model.config
+        else:
+            hf_model_dir = hf_model_or_dir
+            hf_config_or_dir = hf_model_or_dir
+
+        config = QWenConfig.from_hugging_face(hf_config_or_dir,
+                                              dtype=dtype,
+                                              mapping=mapping,
+                                              quant_config=quant_config,
+                                              **kwargs)
+
+        if not use_preloading:
+            hf_model = load_hf_qwen(hf_model_dir, load_model_on_cpu)
+        if use_hf_gptq_checkpoint:
+            weights = load_weights_from_hf_gptq_model(hf_model, config)
+        else:
+            weights = load_weights_from_hf_model(hf_model, config)
+
+        check_share_embedding(weights, config)
+        model = QWenForSequenceClassification(config)
+        model.load(weights)
+        return model
